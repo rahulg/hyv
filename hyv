@@ -1,78 +1,145 @@
-#!/usr/bin/env bash
-set -e -u
+#!/usr/bin/env python3
 
-DRY_RUN=${DRY_RUN:-no}
-HYV_CONF=config.hyv
+import argparse
+import os
+import subprocess
+import sys
+import textwrap
+import uuid
 
-hyv-ex() {
-	[[ ${DRY_RUN} = yes ]] && echo >&2 ${@} && return $?
-	command ${@}
-}
 
-hyv-usage() {
-	local me=$(basename ${0})
-	echo >&2 "${me} usage:"
-	echo >&2 "    ${me}     -> runs the vm"
-	echo >&2 "    ${me} new -> creates a config.hyv in the current directory"
-	exit 1
-}
-trap hyv-usage ERR
+class PathExistsError(Exception):
+    pass
 
-hyv-skel() {
-	[[ -f ${HYV_CONF} ]] && echo >&2 'config.hyv exists, not overwriting' && exit 1
-	cat >${HYV_CONF} <<-EOF
-		# comment out disk if you don't have an image
-		# comment out vcpu to disable SMP
-		# key: value
-		uuid: $(uuidgen)
-		kernel: vmlinuz
-		kernel-args: earlyprintk=serial console=ttyS0 acpi=off
-		initrd: initrd.img
-		ram: 1G
-		# vcpu: 2
-		disk: disk.img
-		# iso: live.iso
-		# bridge-to: en0
-		EOF
-}
 
-hyv-kv() {
-	local key=${1}
-	awk <${HYV_CONF} -v key="^${key}:" '$0 ~ key { print $2; for (i=3; i<=NF; i++) printf " " $i; printf "\n" }'
-}
+class HyvConfig(object):
+    pass
 
-hyv-run() {
-	[[ ! -f ${HYV_CONF} ]] && echo >&2 'config.hyv does not exist' && hyv-usage
 
-	local uuid=$(hyv-kv uuid)
-	local kernel=$(hyv-kv kernel)
-	local kernel_args=$(hyv-kv kernel-args)
-	local initrd=$(hyv-kv initrd)
-	local ram=$(hyv-kv ram)
-	local vcpu=$(hyv-kv vcpu)
-	local disk=$(hyv-kv disk)
-	local iso=$(hyv-kv iso)
-	local br=$(hyv-kv bridge-to)
+def opoo(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
-	args="-U ${uuid} -m ${ram} -s 0:0,hostbridge -s 31,lpc -l com1,stdio -f kexec,${kernel},${initrd},\"${kernel_args}\""
-	[[ ! -z ${vcpu} ]] && args="${args} -c ${vcpu}"
-	[[ ! -z ${iso} ]] && args="${args} -s 3,ahci-cd,${iso}"
-	[[ ! -z ${disk} ]] && args="${args} -s 4,virtio-blk,${disk}"
-	args="${args} -s 2:0,virtio-net"
-	[[ ! -z ${br} ]] && args="${args},${br}"
 
-	hyv-ex sudo xhyve ${args}
-}
+CONFIG_TEMPL = '''
+    # comment out disk if you don't have an image
+    # comment out vcpu to disable SMP
+    # key: value
+    uuid: {uuid}
+    kernel: vmlinuz
+    kargs: earlyprintk=serial console=ttyS0 acpi=off root=/dev/vda1
+    initrd: initrd.img
+    ram: 1G
+    # vcpu: 2
+    disk: disk.img
+    # iso: live.iso
+    # bridge: en0
+'''
 
-op=${1:-run}
-case ${op} in
-	run)
-		hyv-run
-		;;
-	new)
-		hyv-skel
-		;;
-	*)
-		hyv-usage
-		;;
-esac
+
+def new_config(path):
+    if os.path.exists(path):
+        raise PathExistsError
+    with open(path, 'w') as cf:
+        vm_uuid = uuid.uuid4()
+        config = CONFIG_TEMPL.format(uuid=vm_uuid)
+        config = textwrap.dedent(config).lstrip('\n')
+        cf.write(config)
+
+
+def parse_config(path):
+    config = HyvConfig()
+    with open(path, 'r') as cf:
+        for line in cf:
+            line = line.strip()
+            if line[0] == '#':
+                continue
+            tok = line.split(None, 1)
+            config.__dict__[tok[0].rstrip(':')] = tok[1]
+    return config
+
+
+def attempt(f, e=lambda: None):
+    try:
+        f()
+    except AttributeError:
+        e()
+
+
+def run(opts, config):
+    argv = ['xhyve']
+    argv.extend(('-s', '0:0,hostbridge'))
+    argv.extend(('-s', '31,lpc'))
+    argv.extend(('-l', 'com1,stdio'))
+    argv.extend(('-U', config.uuid))
+    argv.extend(('-m', config.ram))
+    attempt(
+        lambda: argv.extend(('-s', '2:0,virtio-net,{}'.format(config.bridge))),
+        lambda: argv.extend(('-s', '2:0,virtio-net')),
+    )
+    attempt(lambda: argv.extend(('-c', config.vcpu)))
+    attempt(lambda: argv.extend(('-s', '3,ahci-cd,{}'.format(config.iso))))
+    attempt(lambda: argv.extend(('-s', '4,virtio-blk,{}'.format(config.disk))))
+    argv.extend(('-f', 'kexec,{},{},{}'.format(
+        config.kernel,
+        config.initrd,
+        config.kargs,
+    )))
+
+    if opts.dry_run:
+        print(argv)
+        return
+
+    try:
+        subprocess.check_call(argv)
+    except:
+        pass
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='CLI tool to launch xhyve VMs',
+    )
+
+    parser.add_argument(
+        '--version',
+        action='version',
+        version='%(prog)s 0.1.0',
+    )
+    parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='show the xhyve command line instead of running it',
+    )
+    parser.add_argument(
+        '--config', '-c',
+        action='store',
+        default='config.hyv',
+        help='configuration file',
+    )
+    parser.add_argument(
+        '--new',
+        action='store_true',
+        help='create a new skeleton configuration file',
+    )
+
+    opts = parser.parse_args()
+
+    if opts.new:
+        try:
+            new_config(opts.config)
+        except PathExistsError:
+            opoo('config file {} exists, not overwriting'.format(opts.config))
+    else:
+        try:
+            config = parse_config(opts.config)
+        except (KeyError, IndexError) as e:
+            opoo('config syntax error')
+        try:
+            run(opts, config)
+        except AttributeError as e:
+            opoo('missing core setting!')
+            opoo(e)
+
+
+if __name__ == '__main__':
+    main()
