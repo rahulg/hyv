@@ -56,8 +56,8 @@ hyv-run() {
 
 	args="-U ${uuid} -m ${ram} -s 0:0,hostbridge -s 31,lpc -l com1,stdio -f kexec,${kernel},${initrd},\"${kernel_args}\""
 	[[ ! -z ${vcpu} ]] && args="${args} -c ${vcpu}"
-	[[ ! -z ${disk} ]] && args="${args} -s 3,ahci-cd,${disk}"
-	[[ ! -z ${iso} ]] && args="${args} -s 4,virtio-blk,${iso}"
+	[[ ! -z ${iso} ]] && args="${args} -s 3,ahci-cd,${iso}"
+	[[ ! -z ${disk} ]] && args="${args} -s 4,virtio-blk,${disk}"
 	args="${args} -s 2:0,virtio-net"
 	[[ ! -z ${br} ]] && args="${args},${br}"
 
