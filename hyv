@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -e -u
+
+DRY_RUN=${DRY_RUN:-no}
+HYV_CONF=config.hyv
+
+hyv-ex() {
+	[[ ${DRY_RUN} = yes ]] && echo >&2 ${@} && return $?
+	command ${@}
+}
+
+hyv-usage() {
+	local me=$(basename ${0})
+	echo >&2 "${me} usage:"
+	echo >&2 "    ${me}     -> runs the vm"
+	echo >&2 "    ${me} new -> creates a config.hyv in the current directory"
+	exit 1
+}
+trap hyv-usage ERR
+
+hyv-skel() {
+	[[ -f ${HYV_CONF} ]] && echo >&2 'config.hyv exists, not overwriting' && exit 1
+	cat >${HYV_CONF} <<-EOF
+		# comment out disk if you don't have an image
+		# comment out vcpu to disable SMP
+		# key: value
+		uuid: $(uuidgen)
+		kernel: vmlinuz
+		kernel-args: earlyprintk=serial console=ttyS0 acpi=off
+		initrd: initrd.img
+		ram: 1G
+		vcpu: 2
+		disk: disk.img
+		EOF
+}
+
+hyv-kv() {
+	local key=${1}
+	awk <${HYV_CONF} -v key="^${key}:" '$0 ~ key { print $2; for (i=3; i<=NF; i++) printf " " $i; printf "\n" }'
+}
+
+hyv-run() {
+	[[ ! -f ${HYV_CONF} ]] && echo >&2 'config.hyv does not exist' && hyv-usage
+
+	local uuid=$(hyv-kv uuid)
+	local kernel=$(hyv-kv kernel)
+	local kernel_args=$(hyv-kv kernel-args)
+	local initrd=$(hyv-kv initrd)
+	local ram=$(hyv-kv ram)
+	local vcpu=$(hyv-kv vcpu)
+	local disk=$(hyv-kv disk)
+
+	args="-U ${uuid} -m ${ram} -s 2:0,virtio-net -s 0:0,hostbridge -s 31,lpc -l com1,stdio -f kexec,${kernel},${initrd},\"${kernel_args}\""
+	[[ -z ${vcpu} ]] || args="${args} -c ${vcpu}"
+	[[ -z ${disk} ]] || args="${args} -s 4,virtio-blk,${disk}"
+
+	hyv-ex sudo xhyve ${args}
+}
+
+op=${1:-run}
+case ${op} in
+	run)
+		hyv-run
+		;;
+	new)
+		hyv-skel
+		;;
+	*)
+		hyv-usage
+		;;
+esac
