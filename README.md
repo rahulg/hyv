@@ -5,9 +5,20 @@ hyv is a CLI tool that makes running [xhyve](https://github.com/mist64/xhyve) VM
 # Requirements
 
 - python3
-- OS X 10.10
+- OS X 10.10.3+
 - `xhyve` from here: [xhyve](https://github.com/mist64/xhyve)
-  - For convenience, you may wish to [tap this brew](https://github.com/rahulg/homebrew-xhyve)
+  - [homebrew](http://brew.sh) users can do a `brew install xhyve`
+
+# Installation
+
+## homebrew
+
+- `brew tap rahulg/hyv`
+- `brew install hyv`
+
+## Manual Installation
+
+- Place `hyv` anywhere in your path
 
 # Usage
 
