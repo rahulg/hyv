@@ -8,6 +8,12 @@ import textwrap
 import uuid
 
 
+XHYVE_CODES = {
+    'reboot': 0,
+    'halt': 2,
+}
+
+
 class PathExistsError(Exception):
     pass
 
@@ -89,10 +95,10 @@ def run(opts, config):
         print(argv)
         return
 
-    try:
-        subprocess.check_call(argv)
-    except:
-        pass
+    while True:
+        retcode = subprocess.call(argv)
+        if retcode != XHYVE_CODES['reboot']:
+            break
 
 
 def main():
