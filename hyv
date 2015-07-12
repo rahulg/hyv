@@ -14,6 +14,13 @@ XHYVE_CODES = {
 }
 
 
+VERSION = (0, 2, 1)
+
+
+def version():
+    return '.'.join(map(str, VERSION))
+
+
 class PathExistsError(Exception):
     pass
 
@@ -109,7 +116,7 @@ def main():
     parser.add_argument(
         '--version',
         action='version',
-        version='%(prog)s 0.1.0',
+        version='%(prog)s {}'.format(version()),
     )
     parser.add_argument(
         '--dry-run',
