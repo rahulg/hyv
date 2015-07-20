@@ -142,21 +142,27 @@ def main():
         try:
             new_config(opts.config)
         except PathExistsError:
-            opoo('config file {} exists, not overwriting'.format(opts.config))
+            opoo('config file \'{}\' exists, not overwriting'.format(opts.config))
+            return 1
     else:
 
         try:
             config = parse_config(opts.config)
         except FileNotFoundError:
-            opoo('{} not found'.format(path))
+            opoo('config file \'{}\' not found'.format(opts.config))
+            return 1
         except NoSectionError as e:
             opoo('config error! all options must be under the [hyv] section')
+            return 1
 
         try:
             run(opts, config)
         except Exception as e:
             opoo(e)
+            return 1
+
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
