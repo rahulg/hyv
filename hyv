@@ -7,6 +7,8 @@ import sys
 import textwrap
 import uuid
 
+from configparser import SafeConfigParser, NoSectionError
+
 
 XHYVE_CODES = {
     'reboot': 0,
@@ -25,27 +27,21 @@ class PathExistsError(Exception):
     pass
 
 
-class HyvConfig(object):
-    pass
-
-
 def opoo(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
 
-CONFIG_TEMPL = '''
-    # comment out disk if you don't have an image
-    # comment out vcpu to disable SMP
-    # key: value
-    uuid: {uuid}
-    kernel: vmlinuz
-    kargs: earlyprintk=serial console=ttyS0 acpi=off root=/dev/vda1
-    initrd: initrd.img
-    ram: 1G
-    # vcpu: 2
-    disk: disk.img
-    # iso: live.iso
-    # bridge: en0
+CONFIG_TEMPLATE = '''
+    [hyv]
+    uuid = {uuid}
+    kernel = vmlinuz
+    kargs = earlyprintk=serial console=ttyS0 acpi=off root=/dev/vda1
+    initrd = initrd.img
+    ram = 1G
+    vcpu = 2
+    disk = disk.img
+    # iso = live.iso
+    # bridge = en0
 '''
 
 
@@ -54,27 +50,22 @@ def new_config(path):
         raise PathExistsError
     with open(path, 'w') as cf:
         vm_uuid = uuid.uuid4()
-        config = CONFIG_TEMPL.format(uuid=vm_uuid)
+        config = CONFIG_TEMPLATE.format(uuid=vm_uuid)
         config = textwrap.dedent(config).lstrip('\n')
         cf.write(config)
 
 
 def parse_config(path):
-    config = HyvConfig()
+    config = SafeConfigParser()
     with open(path, 'r') as cf:
-        for line in cf:
-            line = line.strip()
-            if line[0] == '#':
-                continue
-            tok = line.split(None, 1)
-            config.__dict__[tok[0].rstrip(':')] = tok[1]
-    return config
+        config.read_file(cf)
+    return config['hyv']
 
 
 def attempt(f, e=lambda: None):
     try:
         f()
-    except AttributeError:
+    except KeyError:
         e()
 
 
@@ -83,19 +74,19 @@ def run(opts, config):
     argv.extend(('-s', '0:0,hostbridge'))
     argv.extend(('-s', '31,lpc'))
     argv.extend(('-l', 'com1,stdio'))
-    argv.extend(('-U', config.uuid))
-    argv.extend(('-m', config.ram))
+    argv.extend(('-U', config['uuid']))
+    argv.extend(('-m', config['ram']))
     attempt(
-        lambda: argv.extend(('-s', '2:0,virtio-net,{}'.format(config.bridge))),
+        lambda: argv.extend(('-s', '2:0,virtio-net,{}'.format(config['bridge']))),
         lambda: argv.extend(('-s', '2:0,virtio-net')),
     )
-    attempt(lambda: argv.extend(('-c', config.vcpu)))
-    attempt(lambda: argv.extend(('-s', '3,ahci-cd,{}'.format(config.iso))))
-    attempt(lambda: argv.extend(('-s', '4,virtio-blk,{}'.format(config.disk))))
+    attempt(lambda: argv.extend(('-c', config['vcpu'])))
+    attempt(lambda: argv.extend(('-s', '3,ahci-cd,{}'.format(config['iso']))))
+    attempt(lambda: argv.extend(('-s', '4,virtio-blk,{}'.format(config['disk']))))
     argv.extend(('-f', 'kexec,{},{},{}'.format(
-        config.kernel,
-        config.initrd,
-        config.kargs,
+        config['kernel'],
+        config['initrd'],
+        config['kargs'],
     )))
 
     if opts.dry_run:
@@ -143,14 +134,17 @@ def main():
         except PathExistsError:
             opoo('config file {} exists, not overwriting'.format(opts.config))
     else:
+
         try:
             config = parse_config(opts.config)
-        except (KeyError, IndexError) as e:
-            opoo('config syntax error')
+        except FileNotFoundError:
+            opoo('{} not found'.format(path))
+        except NoSectionError as e:
+            opoo('config error! all options must be under the [hyv] section')
+
         try:
             run(opts, config)
-        except AttributeError as e:
-            opoo('missing core setting!')
+        except Exception as e:
             opoo(e)
 
 
