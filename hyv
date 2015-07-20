@@ -45,6 +45,15 @@ CONFIG_TEMPLATE = '''
 '''
 
 
+class MultiAppendList(list):
+
+    def __init__(self, *args, **kwargs):
+        super(MultiAppendList, self).__init__(*args, **kwargs)
+
+    def mappend(self, *args):
+        self.extend(args)
+
+
 def new_config(path):
     if os.path.exists(path):
         raise PathExistsError
@@ -70,24 +79,25 @@ def attempt(f, e=lambda: None):
 
 
 def run(opts, config):
-    argv = ['xhyve']
-    argv.extend(('-s', '0:0,hostbridge'))
-    argv.extend(('-s', '31,lpc'))
-    argv.extend(('-l', 'com1,stdio'))
-    argv.extend(('-U', config['uuid']))
-    argv.extend(('-m', config['ram']))
+    argv = MultiAppendList()
+    argv.append('xhyve')
+    argv.mappend('-s', '0:0,hostbridge')
+    argv.mappend('-s', '31,lpc')
+    argv.mappend('-l', 'com1,stdio')
+    argv.mappend('-U', config['uuid'])
+    argv.mappend('-m', config['ram'])
     attempt(
-        lambda: argv.extend(('-s', '2:0,virtio-net,{}'.format(config['bridge']))),
-        lambda: argv.extend(('-s', '2:0,virtio-net')),
+        lambda: argv.mappend('-s', '2:0,virtio-net,{}'.format(config['bridge'])),
+        lambda: argv.mappend('-s', '2:0,virtio-net'),
     )
-    attempt(lambda: argv.extend(('-c', config['vcpu'])))
-    attempt(lambda: argv.extend(('-s', '3,ahci-cd,{}'.format(config['iso']))))
-    attempt(lambda: argv.extend(('-s', '4,virtio-blk,{}'.format(config['disk']))))
-    argv.extend(('-f', 'kexec,{},{},{}'.format(
+    attempt(lambda: argv.mappend('-c', config['vcpu']))
+    attempt(lambda: argv.mappend('-s', '3,ahci-cd,{}'.format(config['iso'])))
+    attempt(lambda: argv.mappend('-s', '4,virtio-blk,{}'.format(config['disk'])))
+    argv.mappend('-f', 'kexec,{},{},{}'.format(
         config['kernel'],
         config['initrd'],
         config['kargs'],
-    )))
+    ))
 
     if opts.dry_run:
         print(argv)
