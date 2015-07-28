@@ -34,14 +34,21 @@ def opoo(*args, **kwargs):
 CONFIG_TEMPLATE = '''
     [hyv]
     uuid = {uuid}
-    kernel = vmlinuz
-    kargs = earlyprintk=serial console=ttyS0 root=/dev/vda1
-    initrd = initrd.img
     ram = 1G
     vcpu = 2
     disk = disk.img
-    # iso = live.iso
-    # bridge = en0
+    ; iso = live.iso
+    ; bridge = en0
+
+    [linux]
+    kernel = vmlinuz
+    kargs = earlyprintk=serial console=ttyS0 root=/dev/vda1
+    initrd = initrd.img
+
+    ; [freebsd]
+    ; userboot = userboot.so
+    ; bootvol = disk.img
+    ; kernelenv = 
 '''
 
 
@@ -68,7 +75,7 @@ def parse_config(path):
     config = SafeConfigParser()
     with open(path, 'r') as cf:
         config.read_file(cf)
-    return config['hyv']
+    return config
 
 
 def attempt(f, e=lambda: None):
@@ -79,25 +86,39 @@ def attempt(f, e=lambda: None):
 
 
 def run(opts, config):
+
+    common = config['hyv']
+    linux = config['linux'] if config.has_section('linux') else None
+    freebsd = config['freebsd'] if config.has_section('freebsd') else None
+
     argv = MultiAppendList()
     argv.mappend('xhyve', '-A')
     argv.mappend('-s', '0:0,hostbridge')
     argv.mappend('-s', '31,lpc')
     argv.mappend('-l', 'com1,stdio')
-    argv.mappend('-U', config['uuid'])
-    argv.mappend('-m', config['ram'])
+    argv.mappend('-U', common['uuid'])
+    argv.mappend('-m', common['ram'])
     attempt(
-        lambda: argv.mappend('-s', '2:0,virtio-net,{}'.format(config['bridge'])),
+        lambda: argv.mappend('-s', '2:0,virtio-net,{}'.format(common['bridge'])),
         lambda: argv.mappend('-s', '2:0,virtio-net'),
     )
-    attempt(lambda: argv.mappend('-c', config['vcpu']))
-    attempt(lambda: argv.mappend('-s', '3,ahci-cd,{}'.format(config['iso'])))
-    attempt(lambda: argv.mappend('-s', '4,virtio-blk,{}'.format(config['disk'])))
-    argv.mappend('-f', 'kexec,{},{},{}'.format(
-        config['kernel'],
-        config['initrd'],
-        config['kargs'],
-    ))
+    attempt(lambda: argv.mappend('-c', common['vcpu']))
+    attempt(lambda: argv.mappend('-s', '3,ahci-cd,{}'.format(common['iso'])))
+    attempt(lambda: argv.mappend('-s', '4,virtio-blk,{}'.format(common['disk'])))
+
+    if linux:
+        argv.mappend('-f', 'kexec,{},{},{}'.format(
+            linux['kernel'],
+            linux['initrd'],
+            linux['kargs'],
+        ))
+
+    if freebsd:
+        argv.mappend('-f', 'fbsd,{},{},{}'.format(
+            freebsd['userboot'],
+            freebsd['bootvol'],
+            freebsd['kernelenv'],
+        ))
 
     if opts.dry_run:
         print(argv)
