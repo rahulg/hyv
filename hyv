@@ -35,7 +35,7 @@ CONFIG_TEMPLATE = '''
     [hyv]
     uuid = {uuid}
     kernel = vmlinuz
-    kargs = earlyprintk=serial console=ttyS0 acpi=off root=/dev/vda1
+    kargs = earlyprintk=serial console=ttyS0 root=/dev/vda1
     initrd = initrd.img
     ram = 1G
     vcpu = 2
@@ -80,7 +80,7 @@ def attempt(f, e=lambda: None):
 
 def run(opts, config):
     argv = MultiAppendList()
-    argv.append('xhyve')
+    argv.mappend('xhyve', '-A')
     argv.mappend('-s', '0:0,hostbridge')
     argv.mappend('-s', '31,lpc')
     argv.mappend('-l', 'com1,stdio')
