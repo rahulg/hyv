@@ -10,6 +10,9 @@ import uuid
 from configparser import SafeConfigParser, NoSectionError
 
 
+XHYVE_DEFAULT_BIN = 'com.docker.hyperkit'
+
+
 XHYVE_CODES = {
     'reboot': 0,
     'halt': 2,
@@ -92,7 +95,8 @@ def run(opts, config):
     freebsd = config['freebsd'] if config.has_section('freebsd') else None
 
     argv = MultiAppendList()
-    argv.mappend('xhyve', '-A')
+    argv.append(config['hyv'].get('bin', XHYVE_DEFAULT_BIN))
+    argv.mappend('-A', '-u')
     argv.mappend('-s', '0:0,hostbridge')
     argv.mappend('-s', '31,lpc')
     argv.mappend('-l', 'com1,stdio')
