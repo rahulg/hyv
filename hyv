@@ -108,7 +108,13 @@ def run(opts, config):
     )
     attempt(lambda: argv.mappend('-c', common['vcpu']))
     attempt(lambda: argv.mappend('-s', '3,ahci-cd,{}'.format(common['iso'])))
-    attempt(lambda: argv.mappend('-s', '4,virtio-blk,{}'.format(common['disk'])))
+    if 'qcow' in os.path.splitext(common['disk'])[1]:
+        disk = 'file://{}?sync=1&buffered=1,format=qcow,qcow-config=discard=true'.format(
+            os.path.abspath(common['disk'])
+        )
+    else:
+        disk = common['disk']
+    attempt(lambda: argv.mappend('-s', '4,virtio-blk,{}'.format(disk)))
 
     if linux:
         argv.mappend('-f', 'kexec,{},{},{}'.format(
