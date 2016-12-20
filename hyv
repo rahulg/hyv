@@ -117,6 +117,7 @@ def run(opts, config):
         disk = common['disk']
         driver = 'virtio-blk'
     attempt(lambda: argv.mappend('-s', '4,{},{}'.format(driver, disk)))
+    argv.mappend('-s', '5,virtio-rnd')
 
     if linux:
         argv.mappend('-f', 'kexec,{},{},{}'.format(
