@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 
 import argparse
+import itertools
 import os
 import subprocess
 import sys
 import textwrap
 import uuid
 
-from configparser import SafeConfigParser, NoSectionError
+from typing import List, Optional, Tuple, Union
+
+from configparser import SafeConfigParser, NoSectionError, ParsingError
 
 
 XHYVE_DEFAULT_BIN = 'com.docker.hyperkit'
@@ -19,15 +22,25 @@ XHYVE_CODES = {
 }
 
 
-VERSION = (0, 6, 1)
+VERSION = (0, 8, 0)
 
 
-def version():
+def version() -> str:
     return '.'.join(map(str, VERSION))
 
 
+def realpath(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path))
+
+
 class PathExistsError(Exception):
-    pass
+    def __init__(self, *args, **kwargs):
+        Exception.__init__(self, *args, **kwargs)
+
+
+class FormatError(Exception):
+    def __init__(self, *args, **kwargs):
+        Exception.__init__(self, *args, **kwargs)
 
 
 def opoo(*args, **kwargs):
@@ -38,10 +51,9 @@ CONFIG_TEMPLATE = '''
     [hyv]
     uuid = {uuid}
     ram = 1G
-    vcpu = 2
+    vcpus = 2
     disk = disk.img
     ; iso = live.iso
-    ; bridge = en0
 
     [linux]
     kernel = vmlinuz
@@ -51,7 +63,7 @@ CONFIG_TEMPLATE = '''
     ; [freebsd]
     ; userboot = userboot.so
     ; bootvol = disk.img
-    ; kernelenv = 
+    ; kernelenv =
 '''
 
 
@@ -64,9 +76,151 @@ class MultiAppendList(list):
         self.extend(args)
 
 
+class PCIDevice(object):
+
+    def __init__(
+        self,
+        address: Union[str, int, Tuple[int, int]],
+        driver: str,
+        config: Optional[Union[str, List[str]]] = None,
+    ):
+        if type(address) == str:
+            self.address = address
+        elif type(address) == int:
+            self.address = str(address)
+        elif type(address) == tuple:
+            self.address = '{}:{}'.format(*address)
+
+        self.driver = driver
+
+        if type(config) == str:
+            self.config = [config]
+        else:
+            self.config = config
+
+    def to_str(self) -> str:
+        pci_args = '{},{}'.format(self.address, self.driver)
+        if self.config:
+            pci_args += ','.join(('', *self.config))
+        return pci_args
+
+    @classmethod
+    def from_str(cls, pci_args: str) -> 'PCIDevice':
+        args = pci_args.split(',')
+        try:
+            address = args[0]
+            driver = args[1]
+        except IndexError:
+            raise FormatError('failed to parse pci device str')
+        try:
+            config = args[2:]
+        except IndexError:
+            config = None
+
+        return cls(address, driver, config)
+
+
+class VirtualMachine(object):
+
+    def __init__(self, uuid: str, ram: str = '1G', vcpus: int = None, acpi: bool = True, rtc_in_utc: bool = True):
+        self.uuid = uuid
+        self.vcpus = vcpus
+        self.ram = ram
+        self.net_id = itertools.count(start=0, step=1)
+        # skip to 3, network uses 2
+        self.pci_slot_id = itertools.count(start=3, step=1)
+        self.devices = []
+        self.boot = []
+        self.acpi = acpi
+        self.rtc_in_utc = rtc_in_utc
+        self.dry_run = False
+
+    def add_pci_device(
+        self,
+        driver: str,
+        slot: Optional[str] = None,
+        function: Optional[str] = None,
+        config: Optional[Union[str, List[str]]] = None,
+    ):
+        if slot is not None:
+            address = str(slot)
+        else:
+            address = str(next(self.pci_slot_id))
+        if function is not None:
+            address += ':{}'.format(function)
+        self.devices.append(PCIDevice(
+            address,
+            driver,
+            config,
+        ))
+
+    def add_network_device(self, driver: str = 'virtio-net', config: Optional[List[str]] = None):
+        self.add_pci_device(
+            driver,
+            slot=2,
+            function=next(self.net_id),
+            config=config,
+        )
+
+    def add_iso(self, path: str):
+        path = realpath(path)
+        if not self.dry_run and not os.path.exists(path):
+            raise FileNotFoundError('iso not found: {}'.format(path))
+        self.add_pci_device('ahci-cd', config=path)
+
+    def add_disk(self, path: str):
+        path = realpath(path)
+        if not self.dry_run and not os.path.exists(path):
+            raise FileNotFoundError('disk not found: {}'.format(path))
+
+        if 'qcow' in os.path.splitext(path)[1]:
+            driver = 'ahci-hd'
+            disk = 'file://{}?sync=1&buffered=1,format=qcow,qcow-config=discard=true;compact_after_unmaps=0'.format(path)
+        else:
+            driver = 'virtio-blk'
+            disk = path
+        self.add_pci_device(driver, config=disk)
+
+    def set_boot(self, boot_mechanism: str, *args: List[str]):
+        self.boot = [boot_mechanism]
+        self.boot.extend(args)
+
+    def run(self, xhyve_bin: str):
+        argv = MultiAppendList()
+        argv.append(xhyve_bin)
+
+        argv.mappend('-U', self.uuid)
+
+        if self.acpi:
+            argv.append('-A')
+        if self.rtc_in_utc:
+            argv.append('-u')
+
+        argv.mappend('-m', self.ram)
+        if self.vcpus:
+            argv.mappend('-c', self.vcpus)
+
+        argv.mappend('-l', 'com1,stdio')
+        for device in self.devices:
+            argv.mappend('-s', device.to_str())
+
+        argv.mappend('-f', ','.join(self.boot))
+
+        if self.dry_run:
+            return ' '.join(map(
+                lambda arg: "'{}'".format(arg) if ' ' in arg else arg,
+                argv,
+            ))
+
+        while True:
+            retcode = subprocess.call(argv)
+            if retcode != XHYVE_CODES['reboot']:
+                return 'hyv: vm halted'
+
+
 def new_config(path):
     if os.path.exists(path):
-        raise PathExistsError
+        raise PathExistsError('path exists: {}'.format(path))
     with open(path, 'w') as cf:
         vm_uuid = uuid.uuid4()
         config = CONFIG_TEMPLATE.format(uuid=vm_uuid)
@@ -90,60 +244,37 @@ def attempt(f, e=lambda: None):
 
 def run(opts, config):
 
-    common = config['hyv']
+    vm_conf = config['hyv']
     linux = config['linux'] if config.has_section('linux') else None
     freebsd = config['freebsd'] if config.has_section('freebsd') else None
 
     if linux and freebsd:
         opoo('both linux and freebsd are specified in config. unsure which to boot.')
 
-    argv = MultiAppendList()
-    argv.append(config['hyv'].get('bin', XHYVE_DEFAULT_BIN))
-    argv.mappend('-A', '-u')
-    argv.mappend('-s', '0:0,hostbridge')
-    argv.mappend('-s', '31,lpc')
-    argv.mappend('-l', 'com1,stdio')
-    argv.mappend('-U', common['uuid'])
-    argv.mappend('-m', common['ram'])
-    attempt(
-        lambda: argv.mappend('-s', '2:0,virtio-net,{}'.format(common['bridge'])),
-        lambda: argv.mappend('-s', '2:0,virtio-net'),
-    )
-    attempt(lambda: argv.mappend('-c', common['vcpu']))
-    attempt(lambda: argv.mappend('-s', '3,ahci-cd,{}'.format(common['iso'])))
-    if 'qcow' in os.path.splitext(common['disk'])[1]:
-        disk = 'file://{}?sync=1&buffered=1,format=qcow,qcow-config=discard=true;compact_after_unmaps=0'.format(
-            os.path.abspath(common['disk'])
-        )
-        driver = 'ahci-hd'
-    else:
-        disk = common['disk']
-        driver = 'virtio-blk'
-    attempt(lambda: argv.mappend('-s', '4,{},{}'.format(driver, disk)))
-    argv.mappend('-s', '5,virtio-rnd')
+    vm = VirtualMachine(vm_conf['uuid'])
+    vm.dry_run = opts.dry_run
+    if 'ram' in vm_conf:
+        vm.ram = vm_conf['ram']
+    if 'vcpus' in vm_conf:
+        vm.vcpus = vm_conf['vcpus']
+    vm.add_pci_device('hostbridge', slot=0, function=0)
+    vm.add_pci_device('lpc', slot=31)
+    vm.add_pci_device('virtio-rnd')
+    vm.add_network_device('virtio-net')
+
+    # TODO: multiple ISOs
+    attempt(lambda: vm.add_iso(vm_conf['iso']))
+    # TODO: multile disks
+    attempt(lambda: vm.add_disk(vm_conf['disk']))
 
     if linux:
-        argv.mappend('-f', 'kexec,{},{},{}'.format(
-            linux['kernel'],
-            linux['initrd'],
-            linux['kargs'],
-        ))
+        vm.set_boot('kexec', linux['kernel'], linux['initrd'], linux['kargs'])
 
     if freebsd:
-        argv.mappend('-f', 'fbsd,{},{},{}'.format(
-            freebsd['userboot'],
-            freebsd['bootvol'],
-            freebsd['kernelenv'],
-        ))
+        vm.set_boot('fbsd', freebsd['userboot'], freebsd['bootvol'], freebsd['kernelenv'])
 
-    if opts.dry_run:
-        print(' '.join(argv))
-        return
-
-    while True:
-        retcode = subprocess.call(argv)
-        if retcode != XHYVE_CODES['reboot']:
-            break
+    xhyve_bin = config['hyv'].get('bin', XHYVE_DEFAULT_BIN)
+    opoo(vm.run(xhyve_bin))
 
 
 def main():
@@ -188,8 +319,11 @@ def main():
         except FileNotFoundError:
             opoo('config file \'{}\' not found'.format(opts.config))
             return 1
+        except ParsingError as e:
+            opoo(e)
+            return 1
         except NoSectionError as e:
-            opoo('config error! all options must be under the [hyv] section')
+            opoo('config syntax error')
             return 1
 
         try:
