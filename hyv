@@ -134,7 +134,7 @@ def run(opts, config):
         ))
 
     if opts.dry_run:
-        print(argv)
+        print(' '.join(argv))
         return
 
     while True:
