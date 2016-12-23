@@ -94,6 +94,9 @@ def run(opts, config):
     linux = config['linux'] if config.has_section('linux') else None
     freebsd = config['freebsd'] if config.has_section('freebsd') else None
 
+    if linux and freebsd:
+        opoo('both linux and freebsd are specified in config. unsure which to boot.')
+
     argv = MultiAppendList()
     argv.append(config['hyv'].get('bin', XHYVE_DEFAULT_BIN))
     argv.mappend('-A', '-u')
